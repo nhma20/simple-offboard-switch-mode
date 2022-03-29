@@ -64,21 +64,21 @@ using namespace px4_msgs::msg;
 class OffboardControl : public rclcpp::Node {
 public:
 	OffboardControl() : Node("offboard_control") {
-#ifdef ROS_DEFAULT_API
+// #ifdef ROS_DEFAULT_API
 		offboard_control_mode_publisher_ =
 			this->create_publisher<OffboardControlMode>("fmu/offboard_control_mode/in", 10);
 		trajectory_setpoint_publisher_ =
 			this->create_publisher<TrajectorySetpoint>("fmu/trajectory_setpoint/in", 10);
 		vehicle_command_publisher_ =
 			this->create_publisher<VehicleCommand>("fmu/vehicle_command/in", 10);
-#else
-		offboard_control_mode_publisher_ =
-			this->create_publisher<OffboardControlMode>("fmu/offboard_control_mode/in");
-		trajectory_setpoint_publisher_ =
-			this->create_publisher<TrajectorySetpoint>("fmu/trajectory_setpoint/in");
-		vehicle_command_publisher_ =
-			this->create_publisher<VehicleCommand>("fmu/vehicle_command/in");
-#endif
+// #else
+// 		offboard_control_mode_publisher_ =
+// 			this->create_publisher<OffboardControlMode>("fmu/offboard_control_mode/in");
+// 		trajectory_setpoint_publisher_ =
+// 			this->create_publisher<TrajectorySetpoint>("fmu/trajectory_setpoint/in");
+// 		vehicle_command_publisher_ =
+// 			this->create_publisher<VehicleCommand>("fmu/vehicle_command/in");
+// #endif
 		
 		// check nav_state if in offboard (14)
 		// VehicleStatus: https://github.com/PX4/px4_msgs/blob/master/msg/VehicleStatus.msg
