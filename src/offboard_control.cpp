@@ -51,11 +51,14 @@
 #include <px4_msgs/msg/vehicle_status.hpp>
 #include <rclcpp/rclcpp.hpp>
 #include <stdint.h>
-#include <thread>
-#include <climits>
+
+#include <math.h>  
+#include <limits>
 
 #include <chrono>
 #include <iostream>
+
+#define NAN_ std::numeric_limits<double>::quiet_NaN()
 
 using namespace std::chrono;
 using namespace std::chrono_literals;
@@ -79,24 +82,26 @@ public:
 // 		vehicle_command_publisher_ =
 // 			this->create_publisher<VehicleCommand>("fmu/vehicle_command/in");
 // #endif
-		
-		// check nav_state if in offboard (14)
+
+
 		// VehicleStatus: https://github.com/PX4/px4_msgs/blob/master/msg/VehicleStatus.msg
 		vehicle_status_sub_ = create_subscription<px4_msgs::msg::VehicleStatus>(
-			"/fmu/vehicle_status/out",
-			10,
-			[this](px4_msgs::msg::VehicleStatus::ConstSharedPtr msg) {
-			arming_state_ = msg->arming_state;
-			nav_state_ = msg->nav_state;
+            "/fmu/vehicle_status/out",
+            10,
+            [this](px4_msgs::msg::VehicleStatus::ConstSharedPtr msg) {
+              arming_state_ = msg->arming_state;
+              nav_state_ = msg->nav_state;
+			//   RCLCPP_INFO(this->get_logger(), "arming_state_: %d", arming_state_);
+			//   RCLCPP_INFO(this->get_logger(), "nav_state_: %d", nav_state_);
 			});
 
 
 		// get common timestamp
-		timesync_sub_ = this->create_subscription<px4_msgs::msg::Timesync>("/fmu/timesync/out",
-		10,
-		[this](const px4_msgs::msg::Timesync::UniquePtr msg) {
-			timestamp_.store(msg->timestamp);
-		});
+		timesync_sub_ =
+			this->create_subscription<px4_msgs::msg::Timesync>("fmu/timesync/out", 10,
+				[this](const px4_msgs::msg::Timesync::UniquePtr msg) {
+					timestamp_.store(msg->timestamp);
+				});
 
 
 		// Get velocity vector values
@@ -115,143 +120,116 @@ public:
 				});
 
 
-		auto control_callback = [this]() -> void {
+		auto timer_callback = [this]() -> void {
 
 			// If drone not armed (from external controller), do nothing
-			/*if (nav_state_ != 14) {
+			if (nav_state_ != 14) {
 				RCLCPP_INFO(this->get_logger(), "nav_state: %d", nav_state_);
 				RCLCPP_INFO(this->get_logger(), "Waiting for offboard mode");
+				publish_offboard_control_mode();
+				publish_hold_setpoint();
+				offboard_setpoint_counter_ = 0;   //!< counter for the number of setpoints sent
 				return;
-			}*/
-
-			if (offboard_setpoint_counter_ == 1) { // 5s sleep before starting offboard
-			RCLCPP_INFO(this->get_logger(), "Offboard mode detected");
-				RCLCPP_INFO(this->get_logger(), "Waiting 5 seconds before arming");
-				std::chrono::nanoseconds sleepperiod(5000000000); 
-				rclcpp::GenericRate<std::chrono::high_resolution_clock> rate(sleepperiod);
-				rate.sleep();  
 			}
 
+			if (offboard_setpoint_counter_ < wait_count_) { // 2s sleep before starting offboard
 
-			if (offboard_setpoint_counter_ == 10) {
-				// Change to Offboard mode after 10 setpoints
-				this->publish_vehicle_command(VehicleCommand::VEHICLE_CMD_DO_SET_MODE, 1, 6);
-				this->arm();
-				RCLCPP_INFO(this->get_logger(), "Takeoff and hover");
-			}
-
-
-			// Offboard_control_mode needs to be paired with trajectory_setpoint
-			if (offboard_setpoint_counter_ < hover_count_) 
-			{
+				if (offboard_setpoint_counter_ == 0)
+				{
+					RCLCPP_INFO(this->get_logger(), "Waiting 2 seconds before starting offboard mode");
+				}
+				
 				publish_offboard_control_mode();
-				publish_hover_setpoint();
+				publish_hover_setpoint(); 
 			} 
-			else if (offboard_setpoint_counter_ < yaw_count_)
-			{
-				if (offboard_setpoint_counter_ == hover_count_)
-				{
-					RCLCPP_INFO(this->get_logger(), "Aligning yaw with cables (approximate)");
-				}
-				publish_offboard_control_mode();
-				publish_yaw_setpoint();
-			}
-			else if (offboard_setpoint_counter_ < tracking_count_)
-			{
-				if (offboard_setpoint_counter_ == yaw_count_)
-				{
-					RCLCPP_INFO(this->get_logger(), "Attempting to reach cable");
-				}
-				publish_offboard_control_mode();
-				publish_trajectory_setpoint();
-			} 
-			else 
-			{
-				if (offboard_setpoint_counter_ == tracking_count_)
-				{
-					RCLCPP_INFO(this->get_logger(), "Landing at current position");
-					this->publish_vehicle_command(VehicleCommand::VEHICLE_CMD_NAV_LAND);
-				}
-			}
 
+			else if  (offboard_setpoint_counter_ < tracking_count_) {	
+				if (offboard_setpoint_counter_ == wait_count_)
+				{	
+					RCLCPP_INFO(this->get_logger(), "Follow tracking setpoints");
+				}
+						
+				publish_offboard_control_mode();
+				publish_tracking_setpoint();
+			} 
+
+			else {
+				if (hold_ == false)
+				{
+					RCLCPP_INFO(this->get_logger(), "Hold");
+				}
+
+				hold_ = true;
+				
+				 publish_offboard_control_mode();
+				 publish_hold_setpoint();
+				// this->publish_vehicle_command(VehicleCommand::VEHICLE_CMD_DO_SET_MODE, 1, 8);
+			}
 
 			offboard_setpoint_counter_++;
-
 		};
 
 
-		timer_ = this->create_wall_timer(50ms, control_callback);
-
-	}
-	
-	~OffboardControl() {
-		RCLCPP_INFO(this->get_logger(),  "Shutting down offboard control..");
-		publish_vehicle_command(VehicleCommand::VEHICLE_CMD_NAV_LAND); 
-		std::this_thread::sleep_for(std::chrono::milliseconds(10));
+		timer_ = this->create_wall_timer(50ms, timer_callback);
 		
 	}
-	
-	void arm();
-	void disarm();
+
+	void arm() const;
+	void disarm() const;
 
 private:
 	rclcpp::TimerBase::SharedPtr timer_;
-	rclcpp::Subscription<px4_msgs::msg::VehicleStatus>::SharedPtr vehicle_status_sub_;
-	rclcpp::Subscription<px4_msgs::msg::TrajectorySetpoint>::SharedPtr vel_ctrl_subscription_;
+
 	rclcpp::Publisher<OffboardControlMode>::SharedPtr offboard_control_mode_publisher_;
 	rclcpp::Publisher<TrajectorySetpoint>::SharedPtr trajectory_setpoint_publisher_;
 	rclcpp::Publisher<VehicleCommand>::SharedPtr vehicle_command_publisher_;
+	
 	rclcpp::Subscription<px4_msgs::msg::Timesync>::SharedPtr timesync_sub_;
+	rclcpp::Subscription<px4_msgs::msg::VehicleStatus>::SharedPtr vehicle_status_sub_;
+	rclcpp::Subscription<px4_msgs::msg::TrajectorySetpoint>::SharedPtr vel_ctrl_subscription_;
 
 	std::atomic<uint64_t> timestamp_;   //!< common synced timestamped
-	uint8_t arming_state_; // armed = 4
-	uint8_t nav_state_; // offboard = 14
-	uint64_t offboard_setpoint_counter_ = 0;   //!< counter for the number of setpoints sent
-	uint64_t hover_count_ = 200;	// 10s at 20Hz
-	uint64_t yaw_count_ = 300; // 5s at 20Hz
-	uint64_t tracking_count_ = 900; // 15s at 20Hz (tracking_count_ - yaw_count_ = tracking time)
+	int nav_state_;
+	int arming_state_;
 
-	float hover_height_ = 1.5;
-	float yaw_align_ = -2.0; // -1.15   -0.9
+	bool hold_ = false;
 
-	bool armed = false;
 	float x_ = 0, y_ = 0, z_ = 0;
 	float yaw_ = 0, yawspeed_ = 0;
 	float vx_ = 0, vy_ = 0, vz_ = 0;
+	float hover_height_ = 2;
+
+	uint64_t offboard_setpoint_counter_ = 0;   //!< counter for the number of setpoints sent
+	uint64_t wait_count_ = 40;
+	uint64_t hover_count_ = 200;
+	uint64_t tracking_count_ = 500;
+	uint64_t landing_count_ = tracking_count_;
 
 	void publish_offboard_control_mode() const;
 	void publish_hover_setpoint() const;
-	void publish_yaw_setpoint() const;
-	void publish_trajectory_setpoint() const;
+	void publish_tracking_setpoint() const;
+	void publish_hold_setpoint() const;
 	void publish_vehicle_command(uint16_t command, float param1 = 0.0,
-				     float param2 = 0.0,
-				     float param3 = 0.0,
-				     float param4 = 0.0,
-				     float param5 = 0.0,
-				     float param6 = 0.0,
-				     float param7 = 0.0) const;
+				     float param2 = 0.0) const;
 };
-
 
 /**
  * @brief Send a command to Arm the vehicle
  */
-void OffboardControl::arm() {
-	armed = true;
+void OffboardControl::arm() const {
 	publish_vehicle_command(VehicleCommand::VEHICLE_CMD_COMPONENT_ARM_DISARM, 1.0);
+
 	RCLCPP_INFO(this->get_logger(), "Arm command send");
 }
-
 
 /**
  * @brief Send a command to Disarm the vehicle
  */
-void OffboardControl::disarm() {
-	armed = false;
+void OffboardControl::disarm() const {
 	publish_vehicle_command(VehicleCommand::VEHICLE_CMD_COMPONENT_ARM_DISARM, 0.0);
+
 	RCLCPP_INFO(this->get_logger(), "Disarm command send");
 }
-
 
 /**
  * @brief Publish the offboard control mode.
@@ -264,15 +242,15 @@ void OffboardControl::publish_offboard_control_mode() const {
 	msg.velocity = true;
 	msg.acceleration = false;
 	msg.attitude = false;
-	msg.body_rate = false;
-
+	msg.body_rate = false;	
 	offboard_control_mode_publisher_->publish(msg);
 }
 
 
 /**
  * @brief Publish a trajectory setpoint
- *        Vehicle hovers at hover_height_ meters.
+ *        For this example, it sends a trajectory setpoint to make the
+ *        vehicle hover at 5 meters with a yaw angle of 180 degrees.
  */
 void OffboardControl::publish_hover_setpoint() const {
 
@@ -281,47 +259,47 @@ void OffboardControl::publish_hover_setpoint() const {
 	msg.x = NAN; 		// in meters NED
 	msg.y = NAN;
 	msg.z = -hover_height_;
-	msg.yaw = NAN; 
+	msg.yaw = NAN;
 	trajectory_setpoint_publisher_->publish(msg);
 }
 
 
 /**
  * @brief Publish a trajectory setpoint
- *        Vehicle yaw with north (approximate).
+ *        For this example, it sends a trajectory setpoint to make the
+ *        vehicle hover at 5 meters with a yaw angle of 180 degrees.
  */
-void OffboardControl::publish_yaw_setpoint() const {
+void OffboardControl::publish_hold_setpoint() const {
+
+	TrajectorySetpoint msg{};
+	msg.timestamp = timestamp_.load();
+	msg.x = NAN; 		// in meters NED
+	msg.y = NAN;
+	msg.z = NAN;
+	msg.yaw = NAN;
+	msg.vx = 0.0;	// forwards/backwards in m/s NED
+	msg.vy = 0.0;
+	msg.vz = 0.0;
+	trajectory_setpoint_publisher_->publish(msg);
+}
+
+
+/**
+ * @brief Publish a trajectory setpoint
+ *        Track bounding box only with velocities and yawspeed.
+ */
+void OffboardControl::publish_tracking_setpoint() const {
 
 	TrajectorySetpoint msg{};
 	msg.timestamp = timestamp_.load();
 	msg.x = NAN; 		// in meters NED
 	msg.y = NAN;
 	msg.z = -hover_height_;
-	msg.yaw = yaw_align_;
-	trajectory_setpoint_publisher_->publish(msg);
-}
-
-
-/**
- * @brief Publish a trajectory setpoint
- */
-void OffboardControl::publish_trajectory_setpoint() const {
-
-	TrajectorySetpoint msg{};
-	msg.timestamp = timestamp_.load();
-	msg.x = NAN; 		// in meters NED
-	msg.y = NAN; 		// in meters NED
-	msg.z = NAN; 		// in meters NED
-	msg.yaw = NAN; 		// in radians NED -PI..+PI
-	msg.yawspeed = 0.0; // in radians/sec
-	msg.vx = vx_; 		// in meters/sec
-	msg.vy = vy_; 		// in meters/sec
-	msg.vz = vz_; 		// in meters/sec
-	RCLCPP_INFO(this->get_logger(),  "\n Velocity vector: \n vx: %f, vy: %f, vz: %f'", vx_, vy_, vz_);
-	//msg.acceleration	// in meters/sec^2
-	//msg.jerk			// in meters/sec^3
-	//msg.thrust		// normalized thrust vector in NED
-
+	msg.yaw = NAN;
+	msg.yawspeed = yawspeed_;	// rotational speed around z in radians/sec
+	msg.vx = vx_;	// forwards/backwards in m/s NED
+	msg.vy = vy_;
+	msg.vz = 0.0;
 	trajectory_setpoint_publisher_->publish(msg);
 }
 
@@ -333,18 +311,11 @@ void OffboardControl::publish_trajectory_setpoint() const {
  * @param param2    Command parameter 2
  */
 void OffboardControl::publish_vehicle_command(uint16_t command, float param1,
-					      float param2, float param3, float param4,
-					      float param5, float param6,
-					      float param7) const {
+					      float param2) const {
 	VehicleCommand msg{};
 	msg.timestamp = timestamp_.load();
 	msg.param1 = param1;
 	msg.param2 = param2;
-	msg.param3 = param3;
-	msg.param4 = param4;
-	msg.param5 = param5;
-	msg.param6 = param6;
-	msg.param7 = param7;
 	msg.command = command;
 	msg.target_system = 1;
 	msg.target_component = 1;
@@ -354,7 +325,6 @@ void OffboardControl::publish_vehicle_command(uint16_t command, float param1,
 
 	vehicle_command_publisher_->publish(msg);
 }
-
 
 int main(int argc, char* argv[]) {
 	std::cout << "Starting offboard control node..." << std::endl;
