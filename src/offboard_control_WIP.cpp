@@ -123,18 +123,19 @@ public:
 		auto timer_callback = [this]() -> void {
 
 			// If drone not armed (from external controller), do nothing
-			if (nav_state_ != 4) {
+			if (nav_state_ != 1) {// 14) {
 				RCLCPP_INFO(this->get_logger(), "nav_state: %d", nav_state_);
-				RCLCPP_INFO(this->get_logger(), "Waiting for hold mode");
+				RCLCPP_INFO(this->get_logger(), "Waiting for altitude mode");
 				publish_offboard_control_mode();
 				publish_hold_setpoint();
 				offboard_setpoint_counter_ = 0;   //!< counter for the number of setpoints sent
 				return;
 			}
+			
+			this->publish_vehicle_command(VehicleCommand::VEHICLE_CMD_DO_SET_MODE,1,8);
+			//this->arm();
 
-			//this->publish_vehicle_command(VehicleCommand::VEHICLE_CMD_DO_SET_MODE,1,8);
-
-			if (offboard_setpoint_counter_ < wait_count_) { // 2s sleep before starting offboard
+			if (offboard_setpoint_counter_ < wait_count_){ //wait_count_) { // 2s sleep before starting offboard
 
 				if (offboard_setpoint_counter_ == 0)
 				{
@@ -143,6 +144,10 @@ public:
 				
 				publish_offboard_control_mode();
 				publish_hover_setpoint(); 
+
+				//offboard_setpoint_counter_ = wait_count_; //////////
+
+				RCLCPP_INFO(this->get_logger(), "counter: %d", offboard_setpoint_counter_);
 			} 
 
 			else if  (offboard_setpoint_counter_ < tracking_count_) {	

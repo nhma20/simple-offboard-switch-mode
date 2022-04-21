@@ -87,6 +87,9 @@ void VelocityControlVectorAdvertiser::VelocityDroneControl(float xv, float yawsp
 	vel_ctrl_vect.vx = x_NED;
 	vel_ctrl_vect.vy = y_NED;
 	vel_ctrl_vect.vz = 0;
+
+	RCLCPP_INFO(this->get_logger(), "\n vx: %f \n vy: %f \n vyaw: %f", x_NED, y_NED, yawspeed);
+
 	this->publisher_->publish(vel_ctrl_vect);
 }
 
