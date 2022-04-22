@@ -122,53 +122,72 @@ public:
 
 		auto timer_callback = [this]() -> void {
 
-			// If drone not armed (from external controller), do nothing
-			if (nav_state_ != 4) {
-				RCLCPP_INFO(this->get_logger(), "nav_state: %d", nav_state_);
-				RCLCPP_INFO(this->get_logger(), "Waiting for hold mode");
-				publish_offboard_control_mode();
-				publish_hold_setpoint();
-				offboard_setpoint_counter_ = 0;   //!< counter for the number of setpoints sent
-				return;
-			}
+			// // If drone not armed (from external controller), do nothing
+			// if (nav_state_ != 4) {
+			// 	RCLCPP_INFO(this->get_logger(), "nav_state: %d", nav_state_);
+			// 	RCLCPP_INFO(this->get_logger(), "Waiting for hold mode");
+			// 	publish_offboard_control_mode();
+			// 	publish_hold_setpoint();
+			// 	offboard_setpoint_counter_ = 0;   //!< counter for the number of setpoints sent
+			// 	return;
+			// }
 
-			//this->publish_vehicle_command(VehicleCommand::VEHICLE_CMD_DO_SET_MODE,1,8);
+			// //this->publish_vehicle_command(VehicleCommand::VEHICLE_CMD_DO_SET_MODE,1,8);
 
-			if (offboard_setpoint_counter_ < wait_count_) { // 2s sleep before starting offboard
+			// if (offboard_setpoint_counter_ < wait_count_) { // 2s sleep before starting offboard
 
-				if (offboard_setpoint_counter_ == 0)
-				{
-					RCLCPP_INFO(this->get_logger(), "Waiting 2 seconds before starting offboard mode");
-				}
+			// 	if (offboard_setpoint_counter_ == 0)
+			// 	{
+			// 		RCLCPP_INFO(this->get_logger(), "Waiting 2 seconds before starting offboard mode");
+			// 	}
 				
-				publish_offboard_control_mode();
-				publish_hover_setpoint(); 
-			} 
+			// 	publish_offboard_control_mode();
+			// 	publish_hover_setpoint(); 
+			// } 
 
-			else if  (offboard_setpoint_counter_ < tracking_count_) {	
-				if (offboard_setpoint_counter_ == wait_count_)
-				{	
-					RCLCPP_INFO(this->get_logger(), "Follow tracking setpoints");
-				}
+			// else if  (offboard_setpoint_counter_ < tracking_count_) {	
+			// 	if (offboard_setpoint_counter_ == wait_count_)
+			// 	{	
+			// 		RCLCPP_INFO(this->get_logger(), "Follow tracking setpoints");
+			// 	}
 						
-				publish_offboard_control_mode();
-				publish_tracking_setpoint();
-			} 
+			// 	publish_offboard_control_mode();
+			// 	publish_tracking_setpoint();
+			// } 
 
-			else {
-				if (hold_ == false)
-				{
-					RCLCPP_INFO(this->get_logger(), "Hold");
-				}
+			// else {
+			// 	if (hold_ == false)
+			// 	{
+			// 		RCLCPP_INFO(this->get_logger(), "Hold");
+			// 	}
 
-				hold_ = true;
+			// 	hold_ = true;
 				
-				 publish_offboard_control_mode();
-				 publish_hold_setpoint();
-				// this->publish_vehicle_command(VehicleCommand::VEHICLE_CMD_DO_SET_MODE, 1, 8);
+			// 	 publish_offboard_control_mode();
+			// 	 publish_hold_setpoint();
+			// 	// this->publish_vehicle_command(VehicleCommand::VEHICLE_CMD_DO_SET_MODE, 1, 8);
+			// }
+
+			// offboard_setpoint_counter_++;
+
+
+
+			if (offboard_setpoint_counter_ == 10) {
+
+				// Change to Offboard mode after 10 setpoints
+				this->publish_vehicle_command(VehicleCommand::VEHICLE_CMD_DO_SET_MODE, 1, 6);
+
 			}
 
-			offboard_setpoint_counter_++;
+            // offboard_control_mode needs to be paired with trajectory_setpoint
+			publish_offboard_control_mode();
+			publish_tracking_setpoint();
+
+           		 // stop the counter after reaching 11
+			if (offboard_setpoint_counter_ < 11) {
+				offboard_setpoint_counter_++;
+			}
+
 		};
 
 
