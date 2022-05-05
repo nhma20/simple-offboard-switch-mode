@@ -203,7 +203,7 @@ public:
 			}
 
             // offboard_control_mode needs to be paired with trajectory_setpoint
-			// publish_offboard_control_mode();
+			publish_offboard_control_mode();
 			// publish_tracking_setpoint();
 			publish_test_setpoint();
 
