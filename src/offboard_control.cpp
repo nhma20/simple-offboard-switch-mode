@@ -211,7 +211,7 @@ public:
 				offboard_setpoint_counter_ = 0;   //!< counter for the number of setpoints sent
 				return;
 			}
-			this->arm();
+			// this->arm();
 			this->publish_vehicle_command(VehicleCommand::VEHICLE_CMD_DO_SET_MODE, 1, 6);
 
             // offboard_control_mode needs to be paired with trajectory_setpoint
