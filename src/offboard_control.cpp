@@ -298,7 +298,9 @@ void OffboardControl::disarm() const {
 
 void OffboardControl::publish_test_setpoint() {
 
-	RCLCPP_INFO(this->get_logger(), "Sending test setpoint X %f Y %f Z %f", drone_x_, drone_y_, hover_height_);
+	float test_height = 5;
+
+	RCLCPP_INFO(this->get_logger(), "Sending test setpoint X %f Y %f Z %f", drone_x_, drone_y_, test_height);
 
 	drone_location_mutex_.lock(); {
 
@@ -306,7 +308,7 @@ void OffboardControl::publish_test_setpoint() {
 	msg.timestamp = timestamp_.load();
 	msg.x = drone_x_; 		// in meters NED
 	msg.y = drone_y_;
-	msg.z = -hover_height_;
+	msg.z = -test_height;
 	msg.yaw = yaw_deg_;
 	trajectory_setpoint_publisher_->publish(msg);
 
