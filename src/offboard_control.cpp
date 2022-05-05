@@ -195,22 +195,36 @@ public:
 
 
 
-			if (offboard_setpoint_counter_ == 10) {
+			// if (offboard_setpoint_counter_ == 10) {
 
-				// Change to Offboard mode after 10 setpoints
-				this->publish_vehicle_command(VehicleCommand::VEHICLE_CMD_DO_SET_MODE, 1, 6);
+			// 	// Change to Offboard mode after 10 setpoints
+			// 	this->publish_vehicle_command(VehicleCommand::VEHICLE_CMD_DO_SET_MODE, 1, 6);
 
+			// }
+
+			// // If drone not armed (from external controller), do nothing
+			if (nav_state_ != 14) {
+				RCLCPP_INFO(this->get_logger(), "nav_state: %d", nav_state_);
+				RCLCPP_INFO(this->get_logger(), "Waiting for offboard mode");
+				publish_offboard_control_mode();
+				publish_test_setpoint();
+				offboard_setpoint_counter_ = 0;   //!< counter for the number of setpoints sent
+				return;
 			}
+			this->arm();
+			this->publish_vehicle_command(VehicleCommand::VEHICLE_CMD_DO_SET_MODE, 1, 6);
 
             // offboard_control_mode needs to be paired with trajectory_setpoint
 			publish_offboard_control_mode();
 			// publish_tracking_setpoint();
 			publish_test_setpoint();
 
-           		 // stop the counter after reaching 11
-			if (offboard_setpoint_counter_ < 11) {
-				offboard_setpoint_counter_++;
-			}
+           	// 	 // stop the counter after reaching 11
+			// if (offboard_setpoint_counter_ < 11) {
+			// 	offboard_setpoint_counter_++;
+			// }
+
+
 
 		};
 
