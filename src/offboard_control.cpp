@@ -208,7 +208,6 @@ public:
 				RCLCPP_INFO(this->get_logger(), "Waiting for offboard mode");
 				publish_offboard_control_mode();
 				publish_test_setpoint();
-				offboard_setpoint_counter_ = 0;   //!< counter for the number of setpoints sent
 				return;
 			}
 			// this->arm();
@@ -298,6 +297,8 @@ void OffboardControl::disarm() const {
 
 
 void OffboardControl::publish_test_setpoint() {
+
+	RCLCPP_INFO(this->get_logger(), "Sending test setpoint X %f Y %f Z %f", drone_x_, drone_y_, hover_height_);
 
 	drone_location_mutex_.lock(); {
 
