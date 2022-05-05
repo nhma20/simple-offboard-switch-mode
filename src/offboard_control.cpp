@@ -49,15 +49,17 @@
 #include <px4_msgs/msg/vehicle_command.hpp>
 #include <px4_msgs/msg/vehicle_control_mode.hpp>
 #include <px4_msgs/msg/vehicle_status.hpp>
+#include <px4_msgs/msg/vehicle_odometry.hpp>
 #include <rclcpp/rclcpp.hpp>
 #include <stdint.h>
 
 #include <math.h>  
 #include <limits>
-
+#include <mutex>
 #include <chrono>
 #include <iostream>
 
+#define PI 3.14159265
 #define NAN_ std::numeric_limits<double>::quiet_NaN()
 
 using namespace std::chrono;
@@ -93,6 +95,27 @@ public:
               nav_state_ = msg->nav_state;
 			//   RCLCPP_INFO(this->get_logger(), "arming_state_: %d", arming_state_);
 			//   RCLCPP_INFO(this->get_logger(), "nav_state_: %d", nav_state_);
+			});
+
+		odometry_subscription_ = this->create_subscription<px4_msgs::msg::VehicleOdometry>(  ////
+			"/fmu/vehicle_odometry/out",	10,
+            [this](px4_msgs::msg::VehicleOdometry::ConstSharedPtr _msg) {
+				drone_location_mutex_.lock(); {
+				drone_x_ = _msg->x;
+				drone_y_ = _msg->y;
+				drone_z_ = _msg->z;
+
+				float temp_yaw = 0.0;
+				temp_yaw = atan2(2.0 * (_msg->q[3] * _msg->q[0] + _msg->q[1] * _msg->q[2]) , - 1.0 + 2.0 * (_msg->q[0] * _msg->q[0] + _msg->q[1] * _msg->q[1]));
+				// convert to degrees
+				if (temp_yaw > 0){
+					yaw_deg_ = temp_yaw * (180.0/PI);
+				}
+				else {
+					yaw_deg_ = 360.0 + temp_yaw * (180.0/PI); // + because yaw_ is negative
+				}
+
+				} drone_location_mutex_.unlock();
 			});
 
 
@@ -180,8 +203,9 @@ public:
 			}
 
             // offboard_control_mode needs to be paired with trajectory_setpoint
-			publish_offboard_control_mode();
-			publish_tracking_setpoint();
+			// publish_offboard_control_mode();
+			// publish_tracking_setpoint();
+			publish_test_setpoint();
 
            		 // stop the counter after reaching 11
 			if (offboard_setpoint_counter_ < 11) {
@@ -208,15 +232,20 @@ private:
 	rclcpp::Subscription<px4_msgs::msg::Timesync>::SharedPtr timesync_sub_;
 	rclcpp::Subscription<px4_msgs::msg::VehicleStatus>::SharedPtr vehicle_status_sub_;
 	rclcpp::Subscription<px4_msgs::msg::TrajectorySetpoint>::SharedPtr vel_ctrl_subscription_;
+	rclcpp::Subscription<px4_msgs::msg::VehicleOdometry>::SharedPtr odometry_subscription_;
 
 	std::atomic<uint64_t> timestamp_;   //!< common synced timestamped
 	int nav_state_;
 	int arming_state_;
 
+	std::mutex drone_location_mutex_;
+
 	bool hold_ = false;
 
+	float drone_x_, drone_y_, drone_z_ = 0;
+
 	float x_ = 0, y_ = 0, z_ = 0;
-	float yaw_ = 0, yawspeed_ = 0;
+	float yaw_ = 0, yaw_deg_, yawspeed_ = 0;
 	float vx_ = 0, vy_ = 0, vz_ = 0;
 	float hover_height_ = 2;
 
@@ -226,6 +255,7 @@ private:
 	uint64_t tracking_count_ = 500;
 	uint64_t landing_count_ = tracking_count_;
 
+	void publish_test_setpoint();
 	void publish_offboard_control_mode() const;
 	void publish_hover_setpoint() const;
 	void publish_tracking_setpoint() const;
@@ -251,6 +281,23 @@ void OffboardControl::disarm() const {
 
 	RCLCPP_INFO(this->get_logger(), "Disarm command send");
 }
+
+
+void OffboardControl::publish_test_setpoint() {
+
+	drone_location_mutex_.lock(); {
+
+	TrajectorySetpoint msg{};
+	msg.timestamp = timestamp_.load();
+	msg.x = drone_x_; 		// in meters NED
+	msg.y = drone_y_;
+	msg.z = -hover_height_;
+	msg.yaw = yaw_deg_;
+	trajectory_setpoint_publisher_->publish(msg);
+
+	} drone_location_mutex_.unlock();
+}
+
 
 /**
  * @brief Publish the offboard control mode.
