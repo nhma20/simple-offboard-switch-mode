@@ -107,7 +107,10 @@ public:
 
 				float temp_yaw = 0.0;
 				temp_yaw = atan2(2.0 * (_msg->q[3] * _msg->q[0] + _msg->q[1] * _msg->q[2]) , - 1.0 + 2.0 * (_msg->q[0] * _msg->q[0] + _msg->q[1] * _msg->q[1]));
-				// convert to degrees
+				
+                drone_yaw_ = temp_yaw;
+                
+                // convert to degrees
 				if (temp_yaw > 0){
 					yaw_deg_ = temp_yaw * (180.0/PI);
 				}
@@ -145,90 +148,37 @@ public:
 
 		auto timer_callback = [this]() -> void {
 
-			// // If drone not armed (from external controller), do nothing
-			// if (nav_state_ != 4) {
-			// 	RCLCPP_INFO(this->get_logger(), "nav_state: %d", nav_state_);
-			// 	RCLCPP_INFO(this->get_logger(), "Waiting for hold mode");
-			// 	publish_offboard_control_mode();
-			// 	publish_hold_setpoint();
-			// 	offboard_setpoint_counter_ = 0;   //!< counter for the number of setpoints sent
-			// 	return;
-			// }
 
-			// //this->publish_vehicle_command(VehicleCommand::VEHICLE_CMD_DO_SET_MODE,1,8);
-
-			// if (offboard_setpoint_counter_ < wait_count_) { // 2s sleep before starting offboard
-
-			// 	if (offboard_setpoint_counter_ == 0)
-			// 	{
-			// 		RCLCPP_INFO(this->get_logger(), "Waiting 2 seconds before starting offboard mode");
-			// 	}
-				
-			// 	publish_offboard_control_mode();
-			// 	publish_hover_setpoint(); 
-			// } 
-
-			// else if  (offboard_setpoint_counter_ < tracking_count_) {	
-			// 	if (offboard_setpoint_counter_ == wait_count_)
-			// 	{	
-			// 		RCLCPP_INFO(this->get_logger(), "Follow tracking setpoints");
-			// 	}
-						
-			// 	publish_offboard_control_mode();
-			// 	publish_tracking_setpoint();
-			// } 
-
-			// else {
-			// 	if (hold_ == false)
-			// 	{
-			// 		RCLCPP_INFO(this->get_logger(), "Hold");
-			// 	}
-
-			// 	hold_ = true;
-				
-			// 	 publish_offboard_control_mode();
-			// 	 publish_hold_setpoint();
-			// 	// this->publish_vehicle_command(VehicleCommand::VEHICLE_CMD_DO_SET_MODE, 1, 8);
-			// }
-
-			// offboard_setpoint_counter_++;
-
-
-
-			// if (offboard_setpoint_counter_ == 10) {
-
-			// 	// Change to Offboard mode after 10 setpoints
-			// 	this->publish_vehicle_command(VehicleCommand::VEHICLE_CMD_DO_SET_MODE, 1, 6);
-
-			// }
-
-			// // If drone not armed (from external controller), do nothing
-			if (nav_state_ != 14) {
-				RCLCPP_INFO(this->get_logger(), "nav_state: %d", nav_state_);
-				RCLCPP_INFO(this->get_logger(), "Waiting for offboard mode");
+			// // If drone not armed (from external controller) and put in offboard mode, do nothing
+			if (nav_state_ != 14) 
+            {
+                if (old_nav_state_ != nav_state)
+                {
+                    RCLCPP_INFO(this->get_logger(), "nav_state: %d", nav_state_);
+                    RCLCPP_INFO(this->get_logger(), "Waiting for offboard mode");
+                }
 				publish_offboard_control_mode();
-				publish_test_setpoint();
+				publish_hold_setpoint();
+                old_nav_state_ = nav_state_;
 				return;
 			}
-			// this->arm();
-			this->publish_vehicle_command(VehicleCommand::VEHICLE_CMD_DO_SET_MODE, 1, 6);
+
+            if (!printed_offboard_)
+            {
+                RCLCPP_INFO(this->get_logger(), "\n Entering offboard control! \n");
+                printed_offboard_ = true;
+            }
 
             // offboard_control_mode needs to be paired with trajectory_setpoint
 			publish_offboard_control_mode();
 			// publish_tracking_setpoint();
 			publish_test_setpoint();
 
-           	// 	 // stop the counter after reaching 11
-			// if (offboard_setpoint_counter_ < 11) {
-			// 	offboard_setpoint_counter_++;
-			// }
-
-
 
 		};
 
 
-		timer_ = this->create_wall_timer(50ms, timer_callback);
+		timer_ = this->create_wall_timer(100ms, timer_callback);
 		
 	}
 
@@ -248,14 +198,14 @@ private:
 	rclcpp::Subscription<px4_msgs::msg::VehicleOdometry>::SharedPtr odometry_subscription_;
 
 	std::atomic<uint64_t> timestamp_;   //!< common synced timestamped
-	int nav_state_;
+	int nav_state_, old_nav_state_ = 0;
 	int arming_state_;
+
+    bool printed_offboard_ = false;
 
 	std::mutex drone_location_mutex_;
 
-	bool hold_ = false;
-
-	float drone_x_, drone_y_, drone_z_ = 0;
+	float drone_x_, drone_y_, drone_z_, drone_yaw_ = 0;
 
 	float x_ = 0, y_ = 0, z_ = 0;
 	float yaw_ = 0, yaw_deg_, yawspeed_ = 0;
@@ -296,26 +246,6 @@ void OffboardControl::disarm() const {
 }
 
 
-void OffboardControl::publish_test_setpoint() {
-
-	float test_height = 5;
-
-	RCLCPP_INFO(this->get_logger(), "Sending test setpoint X %f Y %f Z %f", drone_x_, drone_y_, test_height);
-
-	drone_location_mutex_.lock(); {
-
-	TrajectorySetpoint msg{};
-	msg.timestamp = timestamp_.load();
-	msg.x = drone_x_; 		// in meters NED
-	msg.y = drone_y_;
-	msg.z = -test_height;
-	msg.yaw = yaw_deg_;
-	trajectory_setpoint_publisher_->publish(msg);
-
-	} drone_location_mutex_.unlock();
-}
-
-
 /**
  * @brief Publish the offboard control mode.
  *        For this example, only position and altitude controls are active.
@@ -334,37 +264,41 @@ void OffboardControl::publish_offboard_control_mode() const {
 
 /**
  * @brief Publish a trajectory setpoint
- *        For this example, it sends a trajectory setpoint to make the
- *        vehicle hover at 5 meters with a yaw angle of 180 degrees.
+ *        Should go to test_height and hover there
  */
-void OffboardControl::publish_hover_setpoint() const {
+void OffboardControl::publish_test_setpoint() {
+
+	float test_height = 5;
+
+	// RCLCPP_INFO(this->get_logger(), "Sending test setpoint X %f Y %f Z %f", drone_x_, drone_y_, test_height);
+
+	drone_location_mutex_.lock(); {
 
 	TrajectorySetpoint msg{};
 	msg.timestamp = timestamp_.load();
-	msg.x = NAN; 		// in meters NED
-	msg.y = NAN;
-	msg.z = -hover_height_;
-	msg.yaw = NAN;
+	msg.x = drone_x_; 		// in meters NED
+	msg.y = drone_y_;
+	msg.z = -test_height;
+	msg.yaw = drone_yaw_;
 	trajectory_setpoint_publisher_->publish(msg);
+
+	} drone_location_mutex_.unlock();
 }
 
 
 /**
  * @brief Publish a trajectory setpoint
- *        For this example, it sends a trajectory setpoint to make the
- *        vehicle hover at 5 meters with a yaw angle of 180 degrees.
+ *        Drone should hover in place
  */
 void OffboardControl::publish_hold_setpoint() const {
 
 	TrajectorySetpoint msg{};
 	msg.timestamp = timestamp_.load();
-	msg.x = NAN; 		// in meters NED
-	msg.y = NAN;
-	msg.z = NAN;
-	msg.yaw = NAN;
-	msg.vx = 0.0;	// forwards/backwards in m/s NED
-	msg.vy = 0.0;
-	msg.vz = 0.0;
+	msg.x = drone_x_; 		// in meters NED
+	msg.y = drone_y_;
+	msg.z = drone_z_;
+	msg.yaw = drone_yaw_;
+
 	trajectory_setpoint_publisher_->publish(msg);
 }
 
