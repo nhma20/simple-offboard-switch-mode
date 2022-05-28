@@ -45,6 +45,7 @@ endfunction()
 # Add examples
 custom_executable(offboard_control)
 custom_executable(offboard_control_ID)
+custom_executable(offboard_control_ID_local)
 custom_executable(vel_ctrl_vec_pub)
 
 
