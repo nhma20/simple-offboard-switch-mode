@@ -21,6 +21,9 @@ find_package(ament_cmake REQUIRED)
 find_package(ament_cmake_python REQUIRED)
 find_package(rclcpp REQUIRED)
 find_package(px4_msgs REQUIRED)
+find_package(iii_interfaces REQUIRED)
+find_package(std_msgs REQUIRED)
+find_package(Eigen3 REQUIRED)
 find_package(builtin_interfaces REQUIRED)
 find_package(fastcdr REQUIRED)
 find_package(fastrtps REQUIRED)
@@ -31,6 +34,8 @@ function(custom_executable target)
   ament_target_dependencies(${target}
     rclcpp
     px4_msgs
+    std_msgs
+    iii_interfaces
   )
   install(TARGETS ${target}
   DESTINATION lib/${PROJECT_NAME})
@@ -39,6 +44,7 @@ endfunction()
 
 # Add examples
 custom_executable(offboard_control)
+custom_executable(offboard_control_ID)
 custom_executable(vel_ctrl_vec_pub)
 
 

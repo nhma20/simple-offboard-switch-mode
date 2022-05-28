@@ -50,14 +50,23 @@
 #include <px4_msgs/msg/vehicle_control_mode.hpp>
 #include <px4_msgs/msg/vehicle_status.hpp>
 #include <px4_msgs/msg/vehicle_odometry.hpp>
+#include "iii_interfaces/msg/powerline_direction.hpp"
+#include <geometry_msgs/msg/pose_stamped.hpp>
+#include <geometry_msgs/msg/point.hpp>
+#include <geometry_msgs/msg/point_stamped.hpp>
+#include "iii_interfaces/msg/powerline.hpp"
+#include <std_msgs/msg/int32.hpp>
 #include <rclcpp/rclcpp.hpp>
-#include <stdint.h>
 
+#include <stdint.h>
 #include <math.h>  
 #include <limits>
 #include <mutex>
 #include <chrono>
 #include <iostream>
+
+#include <eigen3/Eigen/Core>
+
 
 #define PI 3.14159265
 #define NAN_ std::numeric_limits<double>::quiet_NaN()
@@ -69,21 +78,13 @@ using namespace px4_msgs::msg;
 class OffboardControl : public rclcpp::Node {
 public:
 	OffboardControl() : Node("offboard_control") {
-// #ifdef ROS_DEFAULT_API
 		offboard_control_mode_publisher_ =
 			this->create_publisher<OffboardControlMode>("fmu/offboard_control_mode/in", 10);
 		trajectory_setpoint_publisher_ =
 			this->create_publisher<TrajectorySetpoint>("fmu/trajectory_setpoint/in", 10);
 		vehicle_command_publisher_ =
 			this->create_publisher<VehicleCommand>("fmu/vehicle_command/in", 10);
-// #else
-// 		offboard_control_mode_publisher_ =
-// 			this->create_publisher<OffboardControlMode>("fmu/offboard_control_mode/in");
-// 		trajectory_setpoint_publisher_ =
-// 			this->create_publisher<TrajectorySetpoint>("fmu/trajectory_setpoint/in");
-// 		vehicle_command_publisher_ =
-// 			this->create_publisher<VehicleCommand>("fmu/vehicle_command/in");
-// #endif
+
 
 
 		// VehicleStatus: https://github.com/PX4/px4_msgs/blob/master/msg/VehicleStatus.msg
@@ -93,9 +94,59 @@ public:
             [this](px4_msgs::msg::VehicleStatus::ConstSharedPtr msg) {
               arming_state_ = msg->arming_state;
               nav_state_ = msg->nav_state;
-			//   RCLCPP_INFO(this->get_logger(), "arming_state_: %d", arming_state_);
-			//   RCLCPP_INFO(this->get_logger(), "nav_state_: %d", nav_state_);
 			});
+
+		
+		powerline_ID_sub_ = create_subscription<std_msgs::msg::Int32>(
+            "/typed_ID",
+            10,
+            [this](std_msgs::msg::Int32::ConstSharedPtr msg) {
+              pl_id_ = msg->data;
+			});
+
+
+		powerline_dir_sub_ = create_subscription<iii_interfaces::msg::PowerlineDirection>(
+            "/hough_transformer/cable_yaw_angle",
+            10,
+            [this](iii_interfaces::msg::PowerlineDirection::ConstSharedPtr msg) {
+			  pl_yaw_ = -msg->angle;
+			});
+
+
+		powerline_sub_ = create_subscription<iii_interfaces::msg::Powerline>(
+            "/pl_mapper/powerline",
+            10,
+            [this](iii_interfaces::msg::Powerline::ConstSharedPtr msg) {
+
+			  if(pl_id_ != -1)
+			  {
+				  int pl_id_checked__temp = -1;
+				  int idx = -1;
+
+				  for (int i = 0; i < msg->count; i++)
+				  {
+					  if(msg->ids[i] == pl_id_){
+						pl_id_checked__temp = pl_id_;
+						idx = i;
+					  }
+				  }
+				  
+				  if (pl_id_checked__temp == -1)
+				  {
+					  pl_id_checked_ = -1;
+				  } 
+				  else
+				  {
+					pl_id_checked_ = pl_id_checked__temp;
+					pl_x_ = float(msg->poses[idx].position.x);
+					pl_y_ = float(msg->poses[idx].position.y);
+					pl_z_ = float(msg->poses[idx].position.z);
+
+					// RCLCPP_INFO(this->get_logger(), "Powerline ID X:%f Y:%f Z:%f YAW:%f", pl_x_, pl_y_, pl_z_, pl_yaw_);
+				  }
+			  }
+			});
+
 
 		odometry_subscription_ = this->create_subscription<px4_msgs::msg::VehicleOdometry>(  ////
 			"/fmu/vehicle_odometry/out",	10,
@@ -122,6 +173,9 @@ public:
 			});
 
 
+		id_point_pub_ = this->create_publisher<geometry_msgs::msg::PointStamped>("ID_point", 10);
+
+
 		// get common timestamp
 		timesync_sub_ =
 			this->create_subscription<px4_msgs::msg::Timesync>("fmu/timesync/out", 10,
@@ -130,55 +184,94 @@ public:
 				});
 
 
-		// Get velocity vector values
-		// TrajectorySetpoint: https://github.com/PX4/px4_msgs/blob/ros2/msg/TrajectorySetpoint.msg
-		vel_ctrl_subscription_ = this->create_subscription<px4_msgs::msg::TrajectorySetpoint>(
-			"vel_ctrl_vect_topic",	10,
-			[this](const px4_msgs::msg::TrajectorySetpoint::UniquePtr msg) {
-					x_ = msg->x;
-					y_ = msg->y;
-					z_ = msg->z;
-					yaw_ = msg->yaw;
-					yawspeed_ = msg->yawspeed;
-					vx_ = msg->vx;
-					vy_ = msg->vy;
-					vz_ = msg->vz;
-				});
-
-
 		auto timer_callback = [this]() -> void {
 
+			world_to_points();
+
+			// RCLCPP_INFO(this->get_logger(), "nav_state: %d", nav_state_);
+			// RCLCPP_INFO(this->get_logger(), "Powerline ID: %d", pl_id_checked_);
 
 			// // If drone not armed (from external controller) and put in offboard mode, do nothing
-			if (nav_state_ != 14) 
+			if (nav_state_ != 14 or pl_id_checked_ == -1) 
             {
-                if (old_nav_state_ != nav_state_)
-                {
+                if (old_nav_state_ != nav_state_ && nav_state_ != 14)
+                {				
                     RCLCPP_INFO(this->get_logger(), "nav_state: %d", nav_state_);
                     RCLCPP_INFO(this->get_logger(), "Waiting for offboard mode");
                 }
+
+				if (old_nav_state_ != nav_state_ && nav_state_ == 14)
+                {				
+                    RCLCPP_INFO(this->get_logger(), "nav_state: %d", nav_state_);
+                    RCLCPP_INFO(this->get_logger(), "Offboard mode enabled");
+                }
+
+				if (old_pl_id_ != pl_id_ && pl_id_checked_ == -1)
+                {
+					RCLCPP_INFO(this->get_logger(), "Powerline ID: %d", pl_id_);
+                    RCLCPP_INFO(this->get_logger(), "Waiting for valid powerline ID");
+                }
+
+				if (old_pl_id_ != pl_id_ && pl_id_checked_ != -1)
+                {
+                    RCLCPP_INFO(this->get_logger(), "Got valid powerline ID %d", pl_id_checked_);
+                }
+
+
 				publish_offboard_control_mode();
 				publish_hold_setpoint();
                 old_nav_state_ = nav_state_;
+				old_pl_id_ = pl_id_;
+				counter_ = 0;
 				return;
 			}
 
             if (!printed_offboard_)
             {
-                RCLCPP_INFO(this->get_logger(), "\n Entering offboard control! \n");
+                RCLCPP_INFO(this->get_logger(), "\n \nEntering offboard control \n");
                 printed_offboard_ = true;
+				this->arm();
             }
 
-            // offboard_control_mode needs to be paired with trajectory_setpoint
-			publish_offboard_control_mode();
-			// publish_tracking_setpoint();
-			publish_test_setpoint();
+			if(counter_ < 20){
+				if(counter_ == 0){
+					RCLCPP_INFO(this->get_logger(), "Waiting two seconds \n");
+				}
+				publish_offboard_control_mode();
+				publish_hold_setpoint();
+			}
 
+			else if(counter_ < 100){
+				if(counter_ == 21){
+					RCLCPP_INFO(this->get_logger(), "Beginning hover \n");
+				}
+				publish_offboard_control_mode();
+				publish_hover_setpoint();
+			}
+
+			else if(counter_ >= 100){
+				if(counter_ == 101){
+					RCLCPP_INFO(this->get_logger(), "Beginning alignment \n");
+				}
+				publish_offboard_control_mode();
+				publish_test_setpoint();
+
+			}
+
+			counter_++;
 
 		};
 
 
 		timer_ = this->create_wall_timer(100ms, timer_callback);
+		
+	}
+
+
+	~OffboardControl() {
+		RCLCPP_INFO(this->get_logger(),  "Shutting down offboard control, landing..");
+		publish_vehicle_command(VehicleCommand::VEHICLE_CMD_NAV_LAND); 
+		std::this_thread::sleep_for(std::chrono::milliseconds(50));
 		
 	}
 
@@ -191,7 +284,11 @@ private:
 	rclcpp::Publisher<OffboardControlMode>::SharedPtr offboard_control_mode_publisher_;
 	rclcpp::Publisher<TrajectorySetpoint>::SharedPtr trajectory_setpoint_publisher_;
 	rclcpp::Publisher<VehicleCommand>::SharedPtr vehicle_command_publisher_;
-	
+	rclcpp::Publisher<geometry_msgs::msg::PointStamped>::SharedPtr id_point_pub_;
+
+	rclcpp::Subscription<iii_interfaces::msg::PowerlineDirection>::SharedPtr powerline_dir_sub_;
+	rclcpp::Subscription<iii_interfaces::msg::Powerline>::SharedPtr powerline_sub_;
+	rclcpp::Subscription<std_msgs::msg::Int32>::SharedPtr powerline_ID_sub_;
 	rclcpp::Subscription<px4_msgs::msg::Timesync>::SharedPtr timesync_sub_;
 	rclcpp::Subscription<px4_msgs::msg::VehicleStatus>::SharedPtr vehicle_status_sub_;
 	rclcpp::Subscription<px4_msgs::msg::TrajectorySetpoint>::SharedPtr vel_ctrl_subscription_;
@@ -200,11 +297,17 @@ private:
 	std::atomic<uint64_t> timestamp_;   //!< common synced timestamped
 	int nav_state_, old_nav_state_ = 0;
 	int arming_state_;
+	int pl_id_ = -1; 
+	int old_pl_id_ = 0;
+	int pl_id_checked_ = -1;
+	int counter_ = 0;
+	float x_world_to_id_point_, y_world_to_id_point_, z_world_to_id_point_ = 0.0;
 
     bool printed_offboard_ = false;
 
 	std::mutex drone_location_mutex_;
 
+	float pl_x_, pl_y_, pl_z_, pl_yaw_ = 0;
 	float drone_x_, drone_y_, drone_z_, drone_yaw_ = 0;
 
 	float x_ = 0, y_ = 0, z_ = 0;
@@ -225,7 +328,61 @@ private:
 	void publish_hold_setpoint() const;
 	void publish_vehicle_command(uint16_t command, float param1 = 0.0,
 				     float param2 = 0.0) const;
+	void world_to_points();
 };
+
+
+Eigen::Vector2f rotate_xy(float x, float y, float angle)
+{
+	Eigen::Matrix2f rotation_matrix;
+	rotation_matrix(0,0) = cos(angle);
+	rotation_matrix(0,1) = -sin(angle);
+	rotation_matrix(1,0) = sin(angle);
+	rotation_matrix(1,1) = cos(angle);
+
+	Eigen::Vector2f xy;
+	xy(0,0) = x;
+	xy(1,0) = y;
+
+	Eigen::Vector2f rot_xy = rotation_matrix * xy;
+
+	return rot_xy;
+}
+
+
+
+void OffboardControl::world_to_points()
+{
+	float x_w_t_d = drone_x_;
+	float y_w_t_d = -drone_y_;
+	float z_w_t_d = -drone_z_;
+	float yaw_w_t_d = drone_yaw_;
+
+	// FIND TRANSFORM WORLD->POINTS
+	// USE TO CONTROL DRONE WITH POSITION SETPOINTS
+
+	float x_rot, y_rot;
+	Eigen::Vector2f rot_xy = rotate_xy(pl_x_, pl_y_, -yaw_w_t_d);
+	x_rot = rot_xy(0,0);
+	y_rot = rot_xy(1,0);
+
+	x_world_to_id_point_ = x_rot + x_w_t_d; 
+	y_world_to_id_point_ = y_rot + y_w_t_d;
+	z_world_to_id_point_ = pl_z_ + z_w_t_d;
+
+	geometry_msgs::msg::PointStamped msg;
+	msg.header.frame_id = "world";
+    msg.header.stamp = this->get_clock()->now();
+	msg.point.x = x_world_to_id_point_;
+	msg.point.y = y_world_to_id_point_;
+	msg.point.z = z_world_to_id_point_;
+	id_point_pub_->publish(msg);
+
+	// RCLCPP_INFO(this->get_logger(), "Drone World Position X:%f Y:%f Z:%f YAW:%f", x_w_t_d, y_w_t_d, z_w_t_d, yaw_w_t_d);
+	// RCLCPP_INFO(this->get_logger(), "Drone to Cable Direction Yaw: %f", pl_yaw_);
+	// RCLCPP_INFO(this->get_logger(), "Rotated X:%f Y:%f", x_rot, y_rot); ////
+}
+
 
 /**
  * @brief Send a command to Arm the vehicle
@@ -233,7 +390,7 @@ private:
 void OffboardControl::arm() const {
 	publish_vehicle_command(VehicleCommand::VEHICLE_CMD_COMPONENT_ARM_DISARM, 1.0);
 
-	RCLCPP_INFO(this->get_logger(), "Arm command send");
+	RCLCPP_INFO(this->get_logger(), "Arm command send\n");
 }
 
 /**
@@ -242,7 +399,7 @@ void OffboardControl::arm() const {
 void OffboardControl::disarm() const {
 	publish_vehicle_command(VehicleCommand::VEHICLE_CMD_COMPONENT_ARM_DISARM, 0.0);
 
-	RCLCPP_INFO(this->get_logger(), "Disarm command send");
+	RCLCPP_INFO(this->get_logger(), "Disarm command send\n");
 }
 
 
@@ -276,13 +433,39 @@ void OffboardControl::publish_test_setpoint() {
 
 	TrajectorySetpoint msg{};
 	msg.timestamp = timestamp_.load();
-	msg.x = drone_x_; 		// in meters NED
-	msg.y = drone_y_;
-	msg.z = -test_height;
+	// msg.x = drone_x_; 		// in meters NED
+	// msg.y = drone_y_;
+	// msg.z = -test_height;
+	// msg.yaw = drone_yaw_;
+	msg.x = x_world_to_id_point_; 		// in meters NED
+	msg.y = y_world_to_id_point_;
+	msg.z = -(z_world_to_id_point_-1.5);
 	msg.yaw = drone_yaw_;
+
+	msg.vx = 0.025;	// forwards/backwards in m/s NED
+	msg.vy = 0.025;
+	msg.vz = 0.025;
+
 	trajectory_setpoint_publisher_->publish(msg);
 
 	} drone_location_mutex_.unlock();
+}
+
+
+/**
+ * @brief Publish a trajectory setpoint
+ *        Drone should hover at hover_height_
+ */
+void OffboardControl::publish_hover_setpoint() const {
+
+	TrajectorySetpoint msg{};
+	msg.timestamp = timestamp_.load();
+	msg.x = drone_x_; 		// in meters NED
+	msg.y = drone_y_;
+	msg.z = -hover_height_;
+	msg.yaw = drone_yaw_;
+
+	trajectory_setpoint_publisher_->publish(msg);
 }
 
 

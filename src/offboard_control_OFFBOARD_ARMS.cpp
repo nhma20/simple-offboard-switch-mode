@@ -132,7 +132,7 @@ public:
 				return;
 			}
 			
-			this->publish_vehicle_command(VehicleCommand::VEHICLE_CMD_DO_SET_MODE,1,8);
+			this->publish_vehicle_command(VehicleCommand::VEHICLE_CMD_DO_SET_MODE,1,8); // 1,6
 			this->arm();
 
 			if (offboard_setpoint_counter_ < 9999999){ //wait_count_) { // 2s sleep before starting offboard
