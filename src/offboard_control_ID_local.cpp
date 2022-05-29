@@ -373,10 +373,7 @@ void OffboardControl::publish_test_setpoint() {
 	msg.y = pl_y_;
 	msg.z = -(pl_z_-1.0);
 	msg.yaw = drone_yaw_;
-
-	msg.vx = 1.1;	// forwards/backwards in m/s NED
-	msg.vy = 1.1;
-	msg.vz = 1.1;
+	// msg.yaw = pl_yaw_;
 
 	trajectory_setpoint_publisher_->publish(msg);
 

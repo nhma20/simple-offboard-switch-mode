@@ -117,12 +117,14 @@ public:
             "/pl_mapper/powerline",
             10,
             [this](iii_interfaces::msg::Powerline::ConstSharedPtr msg) {
-
+			  
+			  // If user has typed an ID
 			  if(pl_id_ != -1)
 			  {
 				  int pl_id_checked__temp = -1;
 				  int idx = -1;
 
+				  //Check if ID is valid
 				  for (int i = 0; i < msg->count; i++)
 				  {
 					  if(msg->ids[i] == pl_id_){
@@ -135,14 +137,14 @@ public:
 				  {
 					  pl_id_checked_ = -1;
 				  } 
-				  else
+				  else // If valid, update powerline position
 				  {
-					pl_id_checked_ = pl_id_checked__temp;
-					pl_x_ = float(msg->poses[idx].position.x);
-					pl_y_ = float(msg->poses[idx].position.y);
-					pl_z_ = float(msg->poses[idx].position.z);
-
-					// RCLCPP_INFO(this->get_logger(), "Powerline ID X:%f Y:%f Z:%f YAW:%f", pl_x_, pl_y_, pl_z_, pl_yaw_);
+					powerline_location_mutex_.lock(); {
+						pl_id_checked_ = pl_id_checked__temp;
+						pl_x_ = float(msg->poses[idx].position.x);
+						pl_y_ = float(msg->poses[idx].position.y);
+						pl_z_ = float(msg->poses[idx].position.z);
+					} powerline_location_mutex_.unlock();
 				  }
 			  }
 			});
@@ -160,15 +162,6 @@ public:
 				temp_yaw = atan2(2.0 * (_msg->q[3] * _msg->q[0] + _msg->q[1] * _msg->q[2]) , - 1.0 + 2.0 * (_msg->q[0] * _msg->q[0] + _msg->q[1] * _msg->q[1]));
 				
                 drone_yaw_ = temp_yaw;
-                
-                // convert to degrees
-				if (temp_yaw > 0){
-					yaw_deg_ = temp_yaw * (180.0/PI);
-				}
-				else {
-					yaw_deg_ = 360.0 + temp_yaw * (180.0/PI); // + because yaw_ is negative
-				}
-
 				} drone_location_mutex_.unlock();
 			});
 
@@ -186,12 +179,13 @@ public:
 
 		auto timer_callback = [this]() -> void {
 
-			world_to_points();
+			drone_location_mutex_.lock(); {
+				powerline_location_mutex_.lock(); {
+					world_to_points();
+				} powerline_location_mutex_.unlock();
+			} drone_location_mutex_.unlock();
 
-			// RCLCPP_INFO(this->get_logger(), "nav_state: %d", nav_state_);
-			// RCLCPP_INFO(this->get_logger(), "Powerline ID: %d", pl_id_checked_);
-
-			// // If drone not armed (from external controller) and put in offboard mode, do nothing
+			// If drone not armed (from external controller) and put in offboard mode, do nothing
 			if (nav_state_ != 14 or pl_id_checked_ == -1) 
             {
                 if (old_nav_state_ != nav_state_ && nav_state_ != 14)
@@ -242,11 +236,22 @@ public:
 			}
 
 			else if(counter_ < 100){
-				if(counter_ == 21){
-					RCLCPP_INFO(this->get_logger(), "Beginning hover \n");
+				if(drone_z_ > -1) // Probably on ground
+				{
+					if(counter_ == 21){
+						RCLCPP_INFO(this->get_logger(), "Beginning hover \n");
+					}
+					publish_offboard_control_mode();
+					publish_hover_setpoint();
 				}
-				publish_offboard_control_mode();
-				publish_hover_setpoint();
+				else
+				{
+					if(counter_ == 21){
+						RCLCPP_INFO(this->get_logger(), "Holding position \n");
+					}
+					publish_offboard_control_mode();
+					publish_hold_setpoint();
+				}
 			}
 
 			else if(counter_ >= 100){
@@ -306,20 +311,14 @@ private:
     bool printed_offboard_ = false;
 
 	std::mutex drone_location_mutex_;
+	std::mutex powerline_location_mutex_;
 
 	float pl_x_, pl_y_, pl_z_, pl_yaw_ = 0;
 	float drone_x_, drone_y_, drone_z_, drone_yaw_ = 0;
 
-	float x_ = 0, y_ = 0, z_ = 0;
-	float yaw_ = 0, yaw_deg_, yawspeed_ = 0;
+	float yaw_ = 0, yawspeed_ = 0;
 	float vx_ = 0, vy_ = 0, vz_ = 0;
 	float hover_height_ = 2;
-
-	uint64_t offboard_setpoint_counter_ = 0;   //!< counter for the number of setpoints sent
-	uint64_t wait_count_ = 40;
-	uint64_t hover_count_ = 200;
-	uint64_t tracking_count_ = 500;
-	uint64_t landing_count_ = tracking_count_;
 
 	void publish_test_setpoint();
 	void publish_offboard_control_mode() const;
@@ -358,8 +357,7 @@ void OffboardControl::world_to_points()
 	float z_w_t_d = -drone_z_;
 	float yaw_w_t_d = drone_yaw_;
 
-	// FIND TRANSFORM WORLD->POINTS
-	// USE TO CONTROL DRONE WITH POSITION SETPOINTS
+	// FIND TRANSFORM WORLD->ID_POINT
 
 	float x_rot, y_rot;
 	Eigen::Vector2f rot_xy = rotate_xy(pl_x_, pl_y_, -yaw_w_t_d);
@@ -377,10 +375,6 @@ void OffboardControl::world_to_points()
 	msg.point.y = y_world_to_id_point_;
 	msg.point.z = z_world_to_id_point_;
 	id_point_pub_->publish(msg);
-
-	// RCLCPP_INFO(this->get_logger(), "Drone World Position X:%f Y:%f Z:%f YAW:%f", x_w_t_d, y_w_t_d, z_w_t_d, yaw_w_t_d);
-	// RCLCPP_INFO(this->get_logger(), "Drone to Cable Direction Yaw: %f", pl_yaw_);
-	// RCLCPP_INFO(this->get_logger(), "Rotated X:%f Y:%f", x_rot, y_rot); ////
 }
 
 
@@ -421,30 +415,20 @@ void OffboardControl::publish_offboard_control_mode() const {
 
 /**
  * @brief Publish a trajectory setpoint
- *        Should go to test_height and hover there
+ *        Should go to align with cable of choice there
  */
 void OffboardControl::publish_test_setpoint() {
 
 	float test_height = 5;
 
-	// RCLCPP_INFO(this->get_logger(), "Sending test setpoint X %f Y %f Z %f", drone_x_, drone_y_, test_height);
-
 	drone_location_mutex_.lock(); {
 
 	TrajectorySetpoint msg{};
 	msg.timestamp = timestamp_.load();
-	// msg.x = drone_x_; 		// in meters NED
-	// msg.y = drone_y_;
-	// msg.z = -test_height;
-	// msg.yaw = drone_yaw_;
 	msg.x = x_world_to_id_point_; 		// in meters NED
 	msg.y = y_world_to_id_point_;
-	msg.z = -(z_world_to_id_point_-1.5);
-	msg.yaw = drone_yaw_;
-
-	msg.vx = 0.025;	// forwards/backwards in m/s NED
-	msg.vy = 0.025;
-	msg.vz = 0.025;
+	msg.z = -(z_world_to_id_point_-1.0);
+	msg.yaw = drone_yaw_-pl_yaw_;
 
 	trajectory_setpoint_publisher_->publish(msg);
 
@@ -488,20 +472,20 @@ void OffboardControl::publish_hold_setpoint() const {
 
 /**
  * @brief Publish a trajectory setpoint
- *        Track bounding box only with velocities and yawspeed.
+ *        Track with velocities and yawspeed.
  */
 void OffboardControl::publish_tracking_setpoint() const {
 
 	TrajectorySetpoint msg{};
 	msg.timestamp = timestamp_.load();
-	msg.x = NAN; 		// in meters NED
-	msg.y = NAN;
-	msg.z = -hover_height_;
-	msg.yaw = NAN;
+	msg.x = drone_x_; 		// in meters NED
+	msg.y = drone_y_;
+	msg.z = drone_z_;
+	msg.yaw = drone_yaw_;
 	msg.yawspeed = yawspeed_;	// rotational speed around z in radians/sec
-	msg.vx = vx_;	// forwards/backwards in m/s NED
+	msg.vx = vx_;	// m/s NED
 	msg.vy = vy_;
-	msg.vz = 0.0;
+	msg.vz = vz_;
 	trajectory_setpoint_publisher_->publish(msg);
 }
 
