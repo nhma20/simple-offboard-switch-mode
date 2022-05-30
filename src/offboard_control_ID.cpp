@@ -68,6 +68,14 @@
 #include <eigen3/Eigen/Core>
 
 
+typedef Eigen::Vector3f point_t;
+typedef Eigen::Vector3f orientation_t;
+typedef Eigen::Vector4f quat_t;
+typedef Eigen::Vector3f vector_t;
+typedef Eigen::Matrix3f rotation_matrix_t;
+typedef Eigen::Matrix4f transform_t;
+
+
 #define PI 3.14159265
 #define NAN_ std::numeric_limits<double>::quiet_NaN()
 
@@ -158,10 +166,21 @@ public:
 				drone_y_ = _msg->y;
 				drone_z_ = _msg->z;
 
-				float temp_yaw = 0.0;
-				temp_yaw = atan2(2.0 * (_msg->q[3] * _msg->q[0] + _msg->q[1] * _msg->q[2]) , - 1.0 + 2.0 * (_msg->q[0] * _msg->q[0] + _msg->q[1] * _msg->q[1]));
+				// float temp_yaw = 0.0;
+
+				odo_quat_(0) = _msg->q[0];
+				odo_quat_(1) = _msg->q[1];
+				odo_quat_(2) = _msg->q[2];
+				odo_quat_(3) = _msg->q[3];
+
+				drone_roll_ = atan2(2.0 * (_msg->q[0] * _msg->q[1] + _msg->q[2] * _msg->q[3]) , - 1.0 + 2.0 * (_msg->q[1] * _msg->q[1] + _msg->q[2] * _msg->q[2]));
+				drone_pitch_ = asin(2.0 * (_msg->q[0] * _msg->q[2] - _msg->q[3] * _msg->q[1]));
+				drone_yaw_ = atan2(2.0 * (_msg->q[3] * _msg->q[0] + _msg->q[1] * _msg->q[2]) , - 1.0 + 2.0 * (_msg->q[0] * _msg->q[0] + _msg->q[1] * _msg->q[1]));
 				
-                drone_yaw_ = temp_yaw;
+                // drone_yaw_ = temp_yaw;
+
+
+
 				} drone_location_mutex_.unlock();
 			});
 
@@ -282,6 +301,8 @@ public:
 
 	void arm() const;
 	void disarm() const;
+	
+
 
 private:
 	rclcpp::TimerBase::SharedPtr timer_;
@@ -307,6 +328,7 @@ private:
 	int pl_id_checked_ = -1;
 	int counter_ = 0;
 	float x_world_to_id_point_, y_world_to_id_point_, z_world_to_id_point_ = 0.0;
+	Eigen::Vector4f odo_quat_;
 
     bool printed_offboard_ = false;
 
@@ -314,7 +336,7 @@ private:
 	std::mutex powerline_location_mutex_;
 
 	float pl_x_, pl_y_, pl_z_, pl_yaw_ = 0;
-	float drone_x_, drone_y_, drone_z_, drone_yaw_ = 0;
+	float drone_x_, drone_y_, drone_z_, drone_yaw_, drone_pitch_, drone_roll_ = 0;
 
 	float yaw_ = 0, yawspeed_ = 0;
 	float vx_ = 0, vy_ = 0, vz_ = 0;
@@ -331,23 +353,42 @@ private:
 };
 
 
-Eigen::Vector2f rotate_xy(float x, float y, float angle)
+
+orientation_t quatToEul(quat_t quat)
 {
-	Eigen::Matrix2f rotation_matrix;
-	rotation_matrix(0,0) = cos(angle);
-	rotation_matrix(0,1) = -sin(angle);
-	rotation_matrix(1,0) = sin(angle);
-	rotation_matrix(1,1) = cos(angle);
+    orientation_t eul(
+        atan2(2*(quat[0]*quat[1] + quat[2]*quat[3]), 1-2*(quat[1]*quat[1] + quat[2]*quat[2])),
+        asin(2*(quat[0]*quat[2] - quat[3]*quat[1])),
+        atan2(2*(quat[0]*quat[3] + quat[1]*quat[2]), 1-2*(quat[2]*quat[2]+quat[3]*quat[3]))
+    );
 
-	Eigen::Vector2f xy;
-	xy(0,0) = x;
-	xy(1,0) = y;
-
-	Eigen::Vector2f rot_xy = rotation_matrix * xy;
-
-	return rot_xy;
+    return eul;
 }
 
+
+rotation_matrix_t eulToR(orientation_t eul) 
+{
+    float cos_yaw = cos(eul[2]);
+    float cos_pitch = cos(eul[1]);
+    float cos_roll = cos(eul[0]);
+    float sin_yaw = sin(eul[2]);
+    float sin_pitch = sin(eul[1]);
+    float sin_roll = sin(eul[0]);
+
+    rotation_matrix_t mat;
+
+    mat(0,0) = cos_pitch*cos_yaw;
+    mat(0,1) = sin_roll*sin_pitch*cos_yaw-cos_roll*sin_yaw;
+    mat(0,2) = cos_roll*sin_pitch*cos_yaw+sin_roll*sin_yaw;
+    mat(1,0) = cos_pitch*sin_yaw;
+    mat(1,1) = sin_roll*sin_pitch*sin_yaw+cos_roll*cos_yaw;
+    mat(1,2) = cos_roll*sin_pitch*sin_yaw-sin_roll*cos_yaw;
+    mat(2,0) = -sin_pitch;
+    mat(2,1) = sin_roll*cos_pitch;
+    mat(2,2) = cos_roll*cos_pitch;
+
+    return mat;
+}
 
 
 void OffboardControl::world_to_points()
@@ -355,18 +396,26 @@ void OffboardControl::world_to_points()
 	float x_w_t_d = drone_x_;
 	float y_w_t_d = -drone_y_;
 	float z_w_t_d = -drone_z_;
-	float yaw_w_t_d = drone_yaw_;
 
 	// FIND TRANSFORM WORLD->ID_POINT
 
-	float x_rot, y_rot;
-	Eigen::Vector2f rot_xy = rotate_xy(pl_x_, pl_y_, -yaw_w_t_d);
-	x_rot = rot_xy(0,0);
-	y_rot = rot_xy(1,0);
+	vector_t pl_xyz;
+	pl_xyz(0) = pl_x_;
+	pl_xyz(1) = pl_y_;
+	pl_xyz(2) = pl_z_;
 
-	x_world_to_id_point_ = x_rot + x_w_t_d; 
-	y_world_to_id_point_ = y_rot + y_w_t_d;
-	z_world_to_id_point_ = pl_z_ + z_w_t_d;
+	rotation_matrix_t rot_mat;
+	vector_t rpy = quatToEul(odo_quat_);
+	rpy(0) = rpy(0);
+	rpy(1) = -rpy(1);
+	rpy(2) = -rpy(2);
+	rot_mat = eulToR(rpy);
+
+	vector_t rot_pl_xyz = rot_mat * pl_xyz;
+
+	x_world_to_id_point_ = rot_pl_xyz(0) + x_w_t_d; 
+	y_world_to_id_point_ = rot_pl_xyz(1) + y_w_t_d;
+	z_world_to_id_point_ = rot_pl_xyz(2) + z_w_t_d;
 
 	geometry_msgs::msg::PointStamped msg;
 	msg.header.frame_id = "world";
@@ -418,8 +467,6 @@ void OffboardControl::publish_offboard_control_mode() const {
  *        Should go to align with cable of choice there
  */
 void OffboardControl::publish_test_setpoint() {
-
-	float test_height = 5;
 
 	drone_location_mutex_.lock(); {
 
